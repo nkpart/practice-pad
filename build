@@ -6,6 +6,8 @@ ghcjs -DGHCJS_BROWSER app.hs
 echo MINIFYING
 ccjs app.jsexe/all.js --compilation_level=ADVANCED_OPTIMIZATIONS --isolation_mode=IIFE --assume_function_wrapper --jscomp_off=* --externs=node > docs/all.min.js
 
+zopfli -i1000 docs/all.min.js
+
 echo BUNDLING
 cp app.jsexe/runmain.js docs/
 
