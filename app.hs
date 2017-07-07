@@ -7,16 +7,11 @@
 {-# LANGUAGE TypeApplications           #-}
 import           Control.Monad              (join)
 import           Control.Monad.IO.Class
-import           Control.Monad.Trans
 import qualified Data.Map.Strict            as Map
-import           Data.Text                  (Text, unpack)
 import           Data.Time
-import           Reflex.Dom                 hiding (Pause, Reset)
-
-import           Control.Concurrent         (forkIO)
-import           Control.Lens
 import qualified GHCJS.DOM.HTMLMediaElement as Media
 import           GHCJS.Types
+import           Reflex.Dom                 hiding (Pause, Reset)
 
 -- Countdown timer models
 
@@ -136,7 +131,7 @@ data MetronomeOutputs t = MetronomeOutputs {
 
 createMetronome :: MonadWidget t m => MetronomeInputs t -> m (MetronomeOutputs t)
 createMetronome inputs =
-  do startedOrNot <- accum (\x y -> y) False . leftmost $ [
+  do startedOrNot <- accum (\_ y -> y) False . leftmost $ [
           True <$ _metronomeInputsStart inputs
         , False <$ _metronomeInputsStop inputs
       ]
