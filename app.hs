@@ -38,6 +38,7 @@ newtype Rate = Rate Integer deriving (Eq, Show, Ord, Enum)
 data LimitInputs t =  LimitInputs {
     _limitInsIncrease :: Event t Seconds
   , _limitInsDecrease :: Event t Seconds
+  , _limitInsSet      :: Event t Seconds
 }
 
 data LimitOutputs t =  LimitOutputs {
@@ -49,7 +50,8 @@ createLimit input initial =
   fmap LimitOutputs .
   accum (&) initial . mergeWith (.) $ [
     (\x y -> y - x) <$> _limitInsDecrease input,
-    (+) <$> _limitInsIncrease input
+    (+) <$> _limitInsIncrease input,
+    const <$> _limitInsSet input
   ]
 
 ---------------------------
@@ -145,9 +147,11 @@ createMetronome inputs =
                    -- We emit first because otherwise the first tick is delayed by `rate`
                    holdDyn (Just ()) (Just () <$ e)) $ updated (zipDynWith (,) timeD startedOrNot)
 
-
 -------------------------------------
 -- GOOOOOOOOOOO!
+
+(<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
+(<$$>) = fmap . fmap
 
 main = do
    player <- liftIO $ createAudio "243748__unfa__metronome-2khz-strong-pulse.flac"
@@ -155,16 +159,32 @@ main = do
    mainWidget $ do
     el "div" $ text "Practice Pad"
     el "ul" $ do
-      limits <- el "li" $ LimitInputs <$> (fmap (const 5) <$> button "+") <*> (fmap (const 5) <$> button "-")
-      tickerLimit <- createLimit limits 10
+      (incrL, decrL) <- el "li" $
+        (,) <$> (const 5 <$$> button "+") <*> (const 5 <$$> button "-")
+
+      changes <-
+        el "li" $ do
+          _1min <- (const 60) <$$> button "1:00"
+          _2min <- (const 120) <$$> button "2:00"
+          _5min <- (const 300) <$$> button "5:00"
+          pure . leftmost $ [_1min, _2min, _5min]
+
+      incrBig <-
+        el "li" $ do
+          _1min <- (const 60) <$$> button "+1:00"
+          _2min <- (const 120) <$$> button "+2:00"
+          pure . leftmost $ [_1min, _2min]
+
+      tickerLimit <- createLimit (LimitInputs (leftmost [incrL, incrBig]) decrL changes) 10
 
       el "li" $ display (_limitOutsSeconds tickerLimit)
-      let limitB = current (_limitOutsSeconds tickerLimit)
+
       tockerInputs <- el "li" $ do
         startE <- button "start"
         resetE <- button "reset"
         pauseE <- button "pause"
         resume <- button "resume"
+        let limitB = current (_limitOutsSeconds tickerLimit)
         pure $ TockerInputs limitB startE resetE pauseE resume
 
       tocker <- createTocker tockerInputs
