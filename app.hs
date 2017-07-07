@@ -22,7 +22,6 @@ import           GHCJS.Types
 
 {-
 TODOS
-* Alarm state for timers
 * Build out a boxy UI
 * Add some presets for metronome and timers
 * keep a log of completed alarms
@@ -34,6 +33,12 @@ TODOS
 newtype Seconds =
   Seconds Integer
   deriving (Eq, Show, Ord, Enum, Num)
+
+-- BPM, for metronomes
+newtype Rate = Rate Integer deriving (Eq, Show, Ord, Enum)
+
+-------------------------
+-- The Current Timer size
 
 data LimitInputs t =  LimitInputs {
     _limitInsIncrease :: Event t Seconds
@@ -51,6 +56,9 @@ createLimit input initial =
     (\x y -> y - x) <$> _limitInsDecrease input,
     (+) <$> _limitInsIncrease input
   ]
+
+---------------------------
+-- A Timer and its controls
 
 data TockerInputs t = TockerInputs {
    _tockerInputsLimit  :: Behavior t Seconds
@@ -94,6 +102,28 @@ secondsFrom initial = do
   e <- startTickingE 1
   (fmap ((+ initial) . Seconds) <$> count e)
 
+--------------------------------------------
+--- A Metronome rate
+
+data RateInputs t =  RateInputs {
+    _rateInputsIncrease :: Event t ()
+  , _rateInputsDecrease :: Event t ()
+  }
+
+data RateOutputs t =  RateOutputs {
+    _rateOutputs :: Dynamic t Rate
+}
+
+createRate :: MonadWidget t m => RateInputs t -> Rate -> m (RateOutputs t)
+createRate inputs initial =
+  let decrE = _rateInputsDecrease inputs
+      incrE = _rateInputsIncrease inputs
+   in
+      RateOutputs <$> (accum (&) initial . mergeWith (.) $ [pred <$ decrE, succ <$ incrE])
+
+-------------------------
+-- The Metronome ticks
+
 data MetronomeInputs t = MetronomeInputs {
     _metronomeInputsRate  :: Dynamic t Rate
   , _metronomeInputsStart :: Event t ()
@@ -112,9 +142,7 @@ createMetronome inputs =
       ]
 
      let timeD = rateToPeriod <$> (_metronomeInputsRate inputs)
-
-     fmap (MetronomeOutputs . fmapMaybe id . updated) .
-      fmap join .
+     fmap (MetronomeOutputs . fmapMaybe id . updated . join) .
        widgetHold (pure (pure Nothing)) . fmap (\(rate, x) ->
         if not x
            then pure (pure Nothing)
@@ -122,7 +150,9 @@ createMetronome inputs =
                    -- We emit first because otherwise the first tick is delayed by `rate`
                    holdDyn (Just ()) (Just () <$ e)) $ updated (zipDynWith (,) timeD startedOrNot)
 
-newtype Rate = Rate Integer deriving (Eq, Show, Ord, Enum)
+
+-------------------------------------
+-- GOOOOOOOOOOO!
 
 main = do
    player <- liftIO $ createAudio "243748__unfa__metronome-2khz-strong-pulse.flac"
@@ -149,17 +179,14 @@ main = do
 
     el "ul" $ do
      ------------
-     (decrB, incrB) <- el "li" $ (,) <$> button "-" <*> button "+"
-     rateD <- accum (&) initialMetronomeRate . mergeWith (.) $ [pred <$ decrB, succ <$ incrB]
-     bb2 <- el "li" $ button "Start/Stop Metronome"
-
+     rateInputs <- el "li" $ RateInputs <$> button "-" <*> button "+"
+     RateOutputs rateD <- createRate rateInputs initialMetronomeRate
      el "li" $ display rateD
-
+     bb2 <- el "li" $ button "Start/Stop Metronome"
      startStopMetronomeE <- toggle False bb2
 
      let starts = () <$ ffilter id (updated startStopMetronomeE)
          stops = () <$ ffilter not (updated startStopMetronomeE)
-
      MetronomeOutputs x <- createMetronome $ MetronomeInputs rateD starts stops
      addVoidAction ((Media.play player >> pure () ) <$ x)
      pure ()
