@@ -122,7 +122,6 @@ createMetronome inputs =
                    -- We emit first because otherwise the first tick is delayed by `rate`
                    holdDyn (Just ()) (Just () <$ e)) $ updated (zipDynWith (,) timeD startedOrNot)
 
-
 newtype Rate = Rate Integer deriving (Eq, Show, Ord, Enum)
 
 main = do
