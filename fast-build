@@ -1,0 +1,12 @@
+
+set -e
+
+echo IF IT CANT FIND REFLEX PACKAGES: cabal configure --ghcjs
+
+cabal build
+
+cp dist/build/practice-pad/practice-pad.jsexe/all.js docs/all.min.js
+
+open -a Safari http://localhost:8000
+
+echo DONE

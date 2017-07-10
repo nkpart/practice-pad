@@ -1,14 +1,17 @@
-set -e
+echo CONFIGURE
+
+cabal configure --ghcjs
 
 echo BUILDING
-ghcjs -dedupe -DGHCJS_BROWSER app.hs
+
+cabal build
+
+bb=dist/build/practice-pad/practice-pad.jsexe
 
 echo MINIFYING
-ccjs app.jsexe/all.js --compilation_level=ADVANCED_OPTIMIZATIONS --isolation_mode=IIFE --assume_function_wrapper --jscomp_off=* --externs=node > docs/all.min.js
+
+ccjs dist/build/practice-pad/practice-pad.jsexe/all.js --compilation_level=ADVANCED_OPTIMIZATIONS --isolation_mode=IIFE --assume_function_wrapper --jscomp_off=* --externs=$bb/all.js.externs > docs/all.min.js
 
 zopfli -i1000 docs/all.min.js
-
-echo BUNDLING
-cp app.jsexe/runmain.js docs/
 
 echo DONE

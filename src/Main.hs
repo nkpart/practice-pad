@@ -2,16 +2,23 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE JavaScriptFFI              #-}
 {-# LANGUAGE MultiParamTypeClasses      #-}
+{-# LANGUAGE NoMonomorphismRestriction  #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecursiveDo                #-}
 {-# LANGUAGE TypeApplications           #-}
-import           Control.Monad              (join)
+
+module Main (main) where
+
+import           Control.Monad              (join, void)
 import           Control.Monad.IO.Class
+import           Data.IORef
 import qualified Data.Map.Strict            as Map
+import           Data.String                (fromString)
 import           Data.Time
 import qualified GHCJS.DOM.HTMLMediaElement as Media
 import           GHCJS.Types
 import           Reflex.Dom                 hiding (Pause, Reset)
+import           System.Directory           (canonicalizePath)
 
 -- Countdown timer models
 
@@ -102,14 +109,15 @@ secondsFrom initial = do
 --------------------------------------------
 --- A Metronome rate
 
-data RateInputs t =  RateInputs {
-    _rateInputsIncrease :: Event t ()
-  , _rateInputsDecrease :: Event t ()
+data RateInputs t = RateInputs
+  { _rateInputsDecrease :: Event t ()
+  , _rateInputsIncrease :: Event t ()
   }
 
-data RateOutputs t =  RateOutputs {
-    _rateOutputs :: Dynamic t Rate
-}
+data RateOutputs t = RateOutputs
+  { _rateOutputs :: Dynamic t Rate
+  }
+
 
 createRate :: MonadWidget t m => RateInputs t -> Rate -> m (RateOutputs t)
 createRate inputs initial =
@@ -133,19 +141,19 @@ data MetronomeOutputs t = MetronomeOutputs {
 
 createMetronome :: MonadWidget t m => MetronomeInputs t -> m (MetronomeOutputs t)
 createMetronome inputs =
-  do startedOrNot <- accum (\_ y -> y) False . leftmost $ [
+  do startedOrNot <- holdDyn False $ leftmost [
           True <$ _metronomeInputsStart inputs
         , False <$ _metronomeInputsStop inputs
       ]
 
      let timeD = rateToPeriod <$> (_metronomeInputsRate inputs)
-     fmap (MetronomeOutputs . fmapMaybe id . updated . join) .
-       widgetHold (pure (pure Nothing)) . fmap (\(rate, x) ->
-        if not x
-           then pure (pure Nothing)
-           else do e <- startTickingE rate
-                   -- We emit first because otherwise the first tick is delayed by `rate`
-                   holdDyn (Just ()) (Just () <$ e)) $ updated (zipDynWith (,) timeD startedOrNot)
+         changeRateOrStartStop = (zipDynWith (,) timeD startedOrNot)
+     fmap MetronomeOutputs . (switchPromptly never =<<) . dyn . fmap (\(rate, started) ->
+        if not started
+           then pure never
+           -- it would be nice to emit a tick on click here
+           -- right now this fires after a rate delay
+           else do void <$> startTickingE rate) $ changeRateOrStartStop
 
 -------------------------------------
 -- GOOOOOOOOOOO!
@@ -154,11 +162,30 @@ createMetronome inputs =
 (<$$>) = fmap . fmap
 
 main = do
-   player <- liftIO $ createAudio "243748__unfa__metronome-2khz-strong-pulse.flac"
+   beepFile <- fromString <$> canonicalizePath "243748__unfa__metronome-2khz-strong-pulse.mp3"
    let initialMetronomeRate = Rate 80
-   mainWidget $ do
+       this =
+         do
+           elAttr "script" (Map.singleton "src" "lowLag.js") (pure ())
+           elAttr "script" (Map.singleton "src" "https://code.jquery.com/jquery-1.8.0.min.js") (pure ())
+
+           pb <- getPostBuild
+           performEvent_ (liftIO (print "head") <$ pb)
+   mainWidgetWithHead this $ do
+
+    pb <- getPostBuild
+    performEvent_ (liftIO (print "Hi") <$ pb)
+    -- performEvent_ (liftIO (lowLag_init >> lowLag_load beepFile "beep") <$ pb)
+
+     -- <audio id="audio" src="audio_file.mp3" preload="auto"></audio>
     el "div" $ text "Practice Pad"
+
     el "ul" $ do
+
+      b <- button "configure audio"
+      performEvent_ (liftIO (print "scripty") <$ b)
+      performEvent_ (liftIO (lowLag_init >> lowLag_load beepFile "beep") <$ b)
+
       (incrL, decrL) <- el "li" $
         (,) <$> (const 5 <$$> button "+") <*> (const 5 <$$> button "-")
 
@@ -203,7 +230,8 @@ main = do
      let starts = () <$ ffilter id (updated startStopMetronomeE)
          stops = () <$ ffilter not (updated startStopMetronomeE)
      MetronomeOutputs x <- createMetronome $ MetronomeInputs rateD starts stops
-     addVoidAction ((Media.play player >> pure () ) <$ x)
+
+     addVoidAction (liftIO (lowLag_play "beep") <$ x)
      pure ()
 
 startTickingE :: MonadWidget t m => NominalDiffTime -> m (Event t Integer)
@@ -220,5 +248,11 @@ buttonDyn s = do
   return $ domEvent Click e
 
 -----------
-foreign import javascript unsafe "new Audio($1)"
-    createAudio :: JSString -> IO Media.HTMLMediaElement
+foreign import javascript unsafe "lowLag['init']()"
+ lowLag_init :: IO Media.HTMLMediaElement
+
+foreign import javascript unsafe "lowLag['load']($1, $2)"
+ lowLag_load :: JSString -> JSString -> IO ()
+
+foreign import javascript unsafe "lowLag['play']($1)"
+ lowLag_play :: JSString -> IO ()
