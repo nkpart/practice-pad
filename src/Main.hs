@@ -5,13 +5,11 @@
 {-# LANGUAGE NoMonomorphismRestriction  #-}
 {-# LANGUAGE OverloadedStrings          #-}
 {-# LANGUAGE RecursiveDo                #-}
-{-# LANGUAGE TypeApplications           #-}
 
 module Main (main) where
 
 import           Control.Monad              (join, void)
 import           Control.Monad.IO.Class
-import           Data.IORef
 import qualified Data.Map.Strict            as Map
 import           Data.String                (fromString)
 import           Data.Time
@@ -93,10 +91,9 @@ createTocker inputs = do
           ]
 
   let alarmingE =
-        (attachWith
-           (\limit step -> step >= limit)
-           (_tockerInputsLimit inputs)
-           (updated elapsedD))
+           (<=)
+           <$> _tockerInputsLimit inputs
+           <@> updated elapsedD
   pure $ TockerOutputs elapsedD alarmingE
 
 secondsFrom
@@ -104,7 +101,7 @@ secondsFrom
   => Seconds -> m (Dynamic t Seconds)
 secondsFrom initial = do
   e <- startTickingE 1
-  (fmap ((+ initial) . Seconds) <$> count e)
+  fmap ((+ initial) . Seconds) <$> count e
 
 --------------------------------------------
 --- A Metronome rate
@@ -145,15 +142,18 @@ createMetronome inputs =
           True <$ _metronomeInputsStart inputs
         , False <$ _metronomeInputsStop inputs
       ]
-
-     let timeD = rateToPeriod <$> (_metronomeInputsRate inputs)
-         changeRateOrStartStop = (zipDynWith (,) timeD startedOrNot)
-     fmap MetronomeOutputs . (switchPromptly never =<<) . dyn . fmap (\(rate, started) ->
+     let timeD = rateToPeriod <$> _metronomeInputsRate inputs
+         changeRateOrStartStop = zipDynWith (,) timeD startedOrNot
+     fmap MetronomeOutputs . switchDyn . fmap (\(rate, started) ->
         if not started
            then pure never
            -- it would be nice to emit a tick on click here
            -- right now this fires after a rate delay
-           else do void <$> startTickingE rate) $ changeRateOrStartStop
+           else void <$> startTickingE rate) $ changeRateOrStartStop
+
+switchDyn :: (MonadHold t m, PostBuild t m, DomBuilder t m) =>
+             Dynamic t (m (Event t a)) -> m (Event t a)
+switchDyn = (switchPromptly never =<<) . dyn
 
 -------------------------------------
 -- GOOOOOOOOOOO!
@@ -191,15 +191,15 @@ main = do
 
       changes <-
         el "li" $ do
-          _1min <- (const 60) <$$> button "1:00"
-          _2min <- (const 120) <$$> button "2:00"
-          _5min <- (const 300) <$$> button "5:00"
+          _1min <- const 60 <$$> button "1:00"
+          _2min <- const 120 <$$> button "2:00"
+          _5min <- const 300 <$$> button "5:00"
           pure . leftmost $ [_1min, _2min, _5min]
 
       incrBig <-
         el "li" $ do
-          _1min <- (const 60) <$$> button "+1:00"
-          _2min <- (const 120) <$$> button "+2:00"
+          _1min <- const 60 <$$> button "+1:00"
+          _2min <- const 120 <$$> button "+2:00"
           pure . leftmost $ [_1min, _2min]
 
       tickerLimit <- createLimit (LimitInputs (leftmost [incrL, incrBig]) decrL changes) 10
