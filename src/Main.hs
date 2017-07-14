@@ -4,19 +4,21 @@
 {-# LANGUAGE MultiParamTypeClasses      #-}
 {-# LANGUAGE NoMonomorphismRestriction  #-}
 {-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE Rank2Types                 #-}
 {-# LANGUAGE RecursiveDo                #-}
 
 module Main (main) where
 
-import           Control.Monad              (join, void)
+import           Control.Lens
+import           Control.Monad               (join, void)
 import           Control.Monad.IO.Class
-import qualified Data.Map.Strict            as Map
-import           Data.String                (fromString)
+import qualified Data.Map.Strict             as Map
+import           Data.Monoid
+import           Data.Text                   (pack)
 import           Data.Time
-import qualified GHCJS.DOM.HTMLMediaElement as Media
-import           GHCJS.Types
-import           Reflex.Dom                 hiding (Pause, Reset)
-import           System.Directory           (canonicalizePath)
+import           Language.Javascript.JSaddle
+import           Reflex.Dom.Core             hiding (Pause, Reset)
+import           Warpy                       (runAndServe)
 
 -- Countdown timer models
 
@@ -35,35 +37,38 @@ newtype Seconds =
   deriving (Eq, Show, Ord, Enum, Num)
 
 -- BPM, for metronomes
-newtype Rate = Rate Integer deriving (Eq, Show, Ord, Enum)
+newtype Rate = Rate Integer deriving (Eq, Show, Ord, Enum, Num)
 
--------------------------
--- The Current Timer size
+----------------------------
 
-data LimitInputs t =  LimitInputs {
-    _limitInsIncrease :: Event t Seconds
-  , _limitInsDecrease :: Event t Seconds
-  , _limitInsSet      :: Event t Seconds
+data ValControls t v =  ValControls {
+    _valControlsIncrease :: Event t v
+  , _valControlsDecrease :: Event t v
+  , _valControlsSet      :: Event t v
+  }
+
+---
+
+data Val t v =  Val {
+    _val :: Dynamic t v
 }
 
-data LimitOutputs t =  LimitOutputs {
-    _limitOutsSeconds :: Dynamic t Seconds
-}
-
-createLimit :: MonadWidget t m => LimitInputs t -> Seconds -> m (LimitOutputs t)
-createLimit input initial =
-  fmap LimitOutputs .
+createVal :: (Ord v, MonadWidget t m, Num v) => ValControls t v -> v -> m (Val t v)
+createVal input initial =
+  let lowest = 0
+  in
+  fmap Val .
   accum (&) initial . mergeWith (.) $ [
-    (\x y -> y - x) <$> _limitInsDecrease input,
-    (+) <$> _limitInsIncrease input,
-    const <$> _limitInsSet input
+    (\x y -> max lowest (y - x)) <$> _valControlsDecrease input,
+    (+) <$> _valControlsIncrease input,
+    const <$> _valControlsSet input
   ]
 
 ---------------------------
 -- A Timer and its controls
 
 data TockerInputs t = TockerInputs {
-   _tockerInputsLimit  :: Behavior t Seconds
+   _tockerInputsLimit  :: Dynamic t Seconds
   ,_tockerInputsStart  :: Event t ()
   ,_tockerInputsReset  :: Event t ()
   ,_tockerInputsPause  :: Event t ()
@@ -71,8 +76,8 @@ data TockerInputs t = TockerInputs {
   }
 
 data TockerOutputs t = TockerOutputs {
-    _tockerOutputsElapsed  :: Dynamic t Seconds
-  , _tockerOutputsAlarming :: Event t Bool
+    _tockerOutputsCountdown :: Dynamic t Seconds
+  -- , _tockerOutputsAlarming  :: Event t Bool
   }
 
 createTocker
@@ -90,11 +95,10 @@ createTocker inputs = do
             attach (current elapsedD) (_tockerInputsResume inputs)
           ]
 
-  let alarmingE =
-           (<=)
-           <$> _tockerInputsLimit inputs
-           <@> updated elapsedD
-  pure $ TockerOutputs elapsedD alarmingE
+          --  (-)
+          --  <$> _tockerInputsLimit inputs
+          --  <@> updated elapsedD
+  pure $ TockerOutputs (zipDynWith (\x y -> (\v -> x - v) y) (_tockerInputsLimit inputs) elapsedD)
 
 secondsFrom
   :: MonadWidget t m
@@ -102,26 +106,6 @@ secondsFrom
 secondsFrom initial = do
   e <- startTickingE 1
   fmap ((+ initial) . Seconds) <$> count e
-
---------------------------------------------
---- A Metronome rate
-
-data RateInputs t = RateInputs
-  { _rateInputsDecrease :: Event t ()
-  , _rateInputsIncrease :: Event t ()
-  }
-
-data RateOutputs t = RateOutputs
-  { _rateOutputs :: Dynamic t Rate
-  }
-
-
-createRate :: MonadWidget t m => RateInputs t -> Rate -> m (RateOutputs t)
-createRate inputs initial =
-  let decrE = _rateInputsDecrease inputs
-      incrE = _rateInputsIncrease inputs
-   in
-      RateOutputs <$> (accum (&) initial . mergeWith (.) $ [pred <$ decrE, succ <$ incrE])
 
 -------------------------
 -- The Metronome ticks
@@ -158,81 +142,114 @@ switchDyn = (switchPromptly never =<<) . dyn
 -------------------------------------
 -- GOOOOOOOOOOO!
 
-(<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
-(<$$>) = fmap . fmap
+prefix0 n | n < 10 = "0" <> show n
+          | otherwise = show n
 
-main = do
-   beepFile <- fromString <$> canonicalizePath "243748__unfa__metronome-2khz-strong-pulse.mp3"
-   let initialMetronomeRate = Rate 80
-       this =
-         do
-           elAttr "script" (Map.singleton "src" "lowLag.js") (pure ())
-           elAttr "script" (Map.singleton "src" "https://code.jquery.com/jquery-1.8.0.min.js") (pure ())
+formatSeconds (Seconds s) =
+                  let (m,s') = divMod s 60
+                   in pack $ prefix0 m <> ":" <> prefix0 s'
 
-           pb <- getPostBuild
-           performEvent_ (liftIO (print "head") <$ pb)
-   mainWidgetWithHead this $ do
+main = runAndServe 8008 "static" $ do
+  beepFile <- pure "243748__unfa__metronome-2khz-strong-pulse.mp3"
+  let initialMetronomeRate = Rate 80
+      this =
+        do
+          elAttr "script" (Map.singleton "src" "lowLag.js") (pure ())
+          elAttr "script" (Map.singleton "src" "https://code.jquery.com/jquery-1.8.0.min.js") (pure ())
+          elAttr "link" (Map.fromList [
+                ("rel", "stylesheet"),
+                ("href","https://s3-us-west-2.amazonaws.com/colors-css/2.2.0/colors.min.css")
+              ]) (pure ())
+          elAttr "link" (Map.fromList [
+                ("rel", "stylesheet"),
+                ("href","https://cdnjs.cloudflare.com/ajax/libs/bulma/0.4.3/css/bulma.min.css")
+              ]) (pure ())
 
-    pb <- getPostBuild
-    performEvent_ (liftIO (print "Hi") <$ pb)
-    -- performEvent_ (liftIO (lowLag_init >> lowLag_load beepFile "beep") <$ pb)
+          elAttr "link" (Map.fromList [("rel", "stylesheet"), ("href","site.css")]) (pure ())
+            -- <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
 
-     -- <audio id="audio" src="audio_file.mp3" preload="auto"></audio>
-    el "div" $ text "Practice Pad"
+  mainWidgetWithHead this $ do
+    elClass "section" "hero is-primary" $
+      -- elClass "div" "container" $
+        -- elClass "section" "hero is-primary" $
+          "div" `elClass` "hero-body" $ do
+            elClass "div" "container has-text-centered" $
+              elClass "h1" "title" $ text "The Practice Pad"
 
-    el "ul" $ do
+    elClass "section" "section" $ do
+      elClass "div" "container" $ mdo
+        currentTimer <- createVal timerLimitControls 120
+        tocker <- createTocker tockerControls
+        (tockerControls, timerLimitControls) <- elClass "div" "tile is-ancestor" $ do
+          (addTimeE, subTimeE) <- elClass "div" "tile is-parent is-8" $ do
+            elClass "div" "tile is-child has-text-centered" $ do
 
+              elClass "p" "box title big-number" $ dynText $ formatSeconds <$> (_tockerOutputsCountdown tocker)
+              addTimeE <- elClassClick "div" "title button" (text "+")
+              subTimeE <- elClassClick "div" "title button" (text "-")
+              pure (60 <$ addTimeE, 60 <$ subTimeE)
+
+          tc <- elClass "div" "tile is-2" $ do
+            -- Controls
+            elClass "div" "tile is-parent is-vertical" $ do
+              let thingo a =
+                   elClassClick "div" "tile box is-child button has-text-centered aligner" $
+                     el "p" (text a)
+              startE <- thingo "START"
+              resetE <- thingo "RESET"
+              pauseE <- thingo "PAUSE"
+              resumeE <- thingo "RESUME"
+              let limitB = _val currentTimer
+              pure (TockerInputs limitB startE resetE pauseE resumeE)
+
+            -- PRESETS
+          presets <- elClass "div" "tile is-2" $ do
+            elClass "div" "tile is-parent is-vertical" $ do
+              let thingo a =
+                    elClassClick "div" "tile is-child button has-text-centered aligner is-warning" $
+                      el "p" (text a)
+              _2min <- const 120 <$$> thingo "2:00"
+              _3min <- const 180 <$$> thingo "3:00"
+              _5min <- const 300 <$$> thingo "5:00"
+              _10min <- const 600 <$$> thingo "10:00"
+              _20min <- const 1200 <$$> thingo "20:00"
+              pure . leftmost $ [_2min, _3min, _5min, _10min,_20min]
+          pure (tc, ValControls addTimeE subTimeE presets)
+        pure ()
+
+      ----- METRONOME
+      elClass "div" "container" $ mdo
+        Val metronomeRate <- createVal rateInputs initialMetronomeRate
+        elClass "div" "tile is-ancestor" $ do
+          elClass "div" "tile is-parent is-8" $ do
+            elClass "div" "tile is-child has-text-centered" $ do
+              elClass "p" "box title big-number" $ dynText $ formatRate <$> metronomeRate
+              pure ()
+
+          elClass "div" "tile is-4" $ do
+            elClass "div" "tile is-parent is-vertical" $ do
+              elClass "p" "" (text "lol")
+
+        rateInputs <- el "ul" $ do
+          ------------
+          rateInputs <-
+            do (d1, i1) <- el "li" $ (,) <$> (const 1 <$$> button "-") <*> (const 1 <$$> button "+")
+               (d5, i5) <- el "li" $ (,) <$> (const 5 <$$> button "- 5") <*> (const 5 <$$> button "+ 5")
+               pure (ValControls (leftmost [i1, i5]) (leftmost [d1, d5]) never)
+          bb2 <- el "li" $ button "Start/Stop Metronome"
+          startStopMetronomeE <- toggle False bb2
+          let starts = () <$ ffilter id (updated startStopMetronomeE)
+              stops = () <$ ffilter not (updated startStopMetronomeE)
+          MetronomeOutputs x <- createMetronome $ MetronomeInputs metronomeRate starts stops
+          addVoidAction ((liftJSM $ lowLag_play "beep") <$ x)
+          pure rateInputs
+        pure ()
+
+    el "div" $ do
       b <- button "configure audio"
-      performEvent_ (liftIO (print "scripty") <$ b)
-      performEvent_ (liftIO (lowLag_init >> lowLag_load beepFile "beep") <$ b)
+      performEvent_ ((liftJSM lowLag_init >> liftJSM (lowLag_load beepFile "beep")) <$ b)
 
-      (incrL, decrL) <- el "li" $
-        (,) <$> (const 5 <$$> button "+") <*> (const 5 <$$> button "-")
-
-      changes <-
-        el "li" $ do
-          _1min <- const 60 <$$> button "1:00"
-          _2min <- const 120 <$$> button "2:00"
-          _5min <- const 300 <$$> button "5:00"
-          pure . leftmost $ [_1min, _2min, _5min]
-
-      incrBig <-
-        el "li" $ do
-          _1min <- const 60 <$$> button "+1:00"
-          _2min <- const 120 <$$> button "+2:00"
-          pure . leftmost $ [_1min, _2min]
-
-      tickerLimit <- createLimit (LimitInputs (leftmost [incrL, incrBig]) decrL changes) 10
-
-      el "li" $ display (_limitOutsSeconds tickerLimit)
-
-      tockerInputs <- el "li" $ do
-        startE <- button "start"
-        resetE <- button "reset"
-        pauseE <- button "pause"
-        resume <- button "resume"
-        let limitB = current (_limitOutsSeconds tickerLimit)
-        pure $ TockerInputs limitB startE resetE pauseE resume
-
-      tocker <- createTocker tockerInputs
-      el "li" $ display $ _tockerOutputsElapsed tocker
-      (el "li" . display) =<< holdDyn False (_tockerOutputsAlarming tocker)
-      pure ()
-
-    el "ul" $ do
-     ------------
-     rateInputs <- el "li" $ RateInputs <$> button "-" <*> button "+"
-     RateOutputs rateD <- createRate rateInputs initialMetronomeRate
-     el "li" $ display rateD
-     bb2 <- el "li" $ button "Start/Stop Metronome"
-     startStopMetronomeE <- toggle False bb2
-
-     let starts = () <$ ffilter id (updated startStopMetronomeE)
-         stops = () <$ ffilter not (updated startStopMetronomeE)
-     MetronomeOutputs x <- createMetronome $ MetronomeInputs rateD starts stops
-
-     addVoidAction (liftIO (lowLag_play "beep") <$ x)
-     pure ()
+formatRate (Rate r) = pack (show r) <> " BPM"
 
 startTickingE :: MonadWidget t m => NominalDiffTime -> m (Event t Integer)
 startTickingE n = do
@@ -247,12 +264,36 @@ buttonDyn s = do
   (e, _) <- elAttr' "button" (Map.singleton "type" "button") s
   return $ domEvent Click e
 
+elClassClick elem c s = do
+  (e, _) <- elAttr' elem (Map.singleton "class" c) s
+  return $ domEvent Click e
+
+(<$$>) :: (Functor f, Functor g) => (a -> b) -> f (g a) -> f (g b)
+(<$$>) = fmap . fmap
+
 -----------
-foreign import javascript unsafe "lowLag['init']()"
- lowLag_init :: IO Media.HTMLMediaElement
+-- foreign import javascript unsafe "lowLag['init']()"
+--  lowLag_init :: IO ()
 
-foreign import javascript unsafe "lowLag['load']($1, $2)"
- lowLag_load :: JSString -> JSString -> IO ()
+lowLag_init :: JSM ()
+lowLag_init = do ll <- jsg ("lowLag" :: String)
+                 ll ^. js0 ("init" :: String)
+                 pure ()
 
-foreign import javascript unsafe "lowLag['play']($1)"
- lowLag_play :: JSString -> IO ()
+-- foreign import javascript unsafe "lowLag['load']($1, $2)"
+--  lowLag_load :: JSString -> JSString -> IO ()
+
+lowLag_load :: JSString -> JSString -> JSM ()
+lowLag_load  a b =
+  do ll <- jsg ("lowLag" :: String)
+     ll ^. js2 ("load" :: String) a b
+     pure ()
+
+-- foreign import javascript unsafe "lowLag['play']($1)"
+--  lowLag_play :: JSString -> IO ()
+
+lowLag_play :: JSString -> JSM ()
+lowLag_play a =
+  do ll <- jsg ("lowLag" :: String)
+     ll ^. js1 ("play" :: String) a
+     pure ()
