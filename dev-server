@@ -1,0 +1,4 @@
+
+#!/usr/bin/env bash
+port=${1:-9090}
+ghcid -W --test "devMainAutoReload apiServer appWidget $port"

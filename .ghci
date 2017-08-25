@@ -1,0 +1,4 @@
+:set prompt "> "
+:set -isrc
+import App
+:load Main

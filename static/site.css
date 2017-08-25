@@ -1,0 +1,15 @@
+.big-number {
+  font-size: 10rem;
+  font-family: Courier New, Courier, monospace;
+  white-space: pre;
+}
+
+.aligner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wide-range input {
+   width: 95%;
+} 
